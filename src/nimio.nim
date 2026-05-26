@@ -5,12 +5,13 @@ const
   OllamaPort = Port(11434)
   Model = "qwen3.6:35b"
 
-proc main() =
+proc chat(messages: seq[JsonNode]): string =
+  ## Sends the conversation to Ollama, streams the response to stdout,
+  ## and returns the assistant's full content (no thinking) for history.
+
   let body = $(%*{
     "model": Model,
-    "messages": [
-      {"role": "user", "content": "What's 47 * 83? Show your reasoning step by step."}
-    ],
+    "messages": messages,
     "stream": true
   })
 
@@ -27,18 +28,17 @@ proc main() =
     body
   socket.send(request)
 
-  # Skip response headers
+  # Skip headers
   while true:
     let line = socket.recvLine()
     if line == "\r\n" or line.len == 0:
       break
 
-  # Track whether we're in thinking or content phase so we can manage
-  # terminal colors and add separators
   var inThinking = false
   var inContent = false
-
+  var assistantContent = ""  # accumulated for history
   var buffer = ""
+
   while true:
     let sizeLine = socket.recvLine().strip()
     if sizeLine.len == 0:
@@ -72,7 +72,6 @@ proc main() =
       if parsed.hasKey("message"):
         let msg = parsed["message"]
 
-        # Thinking phase: dim text, prefixed with a header on first token
         if msg.hasKey("thinking"):
           let t = msg["thinking"].getStr()
           if t.len > 0:
@@ -82,19 +81,18 @@ proc main() =
             stdout.styledWrite(styleDim, t)
             stdout.flushFile()
 
-        # Content phase: normal text, with a separator from thinking
         if msg.hasKey("content"):
           let c = msg["content"].getStr()
           if c.len > 0:
             if not inContent:
               if inThinking:
-                stdout.write("\n\n")  # break between thinking and answer
-              stdout.styledWrite(styleBright, "💬 answer:\n")
+                stdout.write("\n\n")
+              stdout.styledWrite(styleBright, "💬 ")
               inContent = true
             stdout.write(c)
             stdout.flushFile()
+            assistantContent.add(c)
 
-      # Final chunk: print stats
       if parsed.hasKey("done") and parsed["done"].getBool():
         echo ""
         if parsed.hasKey("eval_count") and parsed.hasKey("eval_duration"):
@@ -103,11 +101,46 @@ proc main() =
           let durS = durNs.float / 1_000_000_000.0
           let tps = tokens.float / durS
           stdout.styledWrite(styleDim,
-            "\n[", $tokens, " tokens in ", formatFloat(durS, ffDecimal, 2), "s = ",
+            "[", $tokens, " tokens in ", formatFloat(durS, ffDecimal, 2), "s = ",
             formatFloat(tps, ffDecimal, 1), " tok/s]\n")
         socket.close()
-        return
+        return assistantContent
 
   socket.close()
+  return assistantContent
+
+proc main() =
+  echo "nimio — talking to ", Model
+  echo "type a message and press Enter. Empty input or Ctrl+D to quit."
+  echo ""
+
+  var messages: seq[JsonNode] = @[]
+
+  while true:
+    stdout.styledWrite(styleBright, "> ")
+    stdout.flushFile()
+
+    var userInput: string
+    try:
+      userInput = stdin.readLine()
+    except EOFError:
+      echo "\nbye"
+      break
+
+    let trimmed = userInput.strip()
+    if trimmed.len == 0:
+      echo "bye"
+      break
+
+    # Append user message to history
+    messages.add(%*{"role": "user", "content": trimmed})
+
+    # Send and stream response
+    let reply = chat(messages)
+
+    # Append assistant reply to history (content only, no thinking)
+    messages.add(%*{"role": "assistant", "content": reply})
+
+    echo ""  # blank line between turns
 
 main()
