@@ -1,6 +1,7 @@
 ## Ollama HTTP client. Handles streaming chat requests over a raw TCP
-## socket. Knows nothing about agent loops, tools, or workdir — it just
-## sends messages and streams back content + thinking.
+## socket. Returns both the assistant's text content and any tool calls
+## the model requested. Knows nothing about agent loops, tools' actual
+## behavior, or workdir — those live in higher layers.
 
 import std/[net, json, strutils, terminal]
 
@@ -18,25 +19,41 @@ type
   Message* = object
     role*: Role
     content*: string
+    toolName*: string  # only for role=rTool: which tool produced this result
+
+  ToolCall* = object
+    name*: string
+    arguments*: JsonNode
+
+  ChatResponse* = object
+    content*: string
+    toolCalls*: seq[ToolCall]
 
 proc toJson*(m: Message): JsonNode =
-  ## Convert a Message to the JSON shape Ollama expects.
-  %*{"role": $m.role, "content": m.content}
+  result = %*{"role": $m.role, "content": m.content}
+  if m.role == rTool and m.toolName.len > 0:
+    result["tool_name"] = %m.toolName
 
-proc chat*(model: string, messages: seq[Message]): string =
-  ## Sends the conversation to Ollama, streams the response to stdout,
-  ## and returns the assistant's accumulated content (no thinking).
+proc chat*(model: string, messages: seq[Message],
+           tools: JsonNode = nil,
+           think: bool = false): ChatResponse =
+  ## Send a chat request to Ollama and stream the response.
+  ## Returns the accumulated content and any tool_calls the model emitted.
 
-  # Build messages array for the request
   var jsonMessages = newJArray()
   for m in messages:
     jsonMessages.add(m.toJson())
 
-  let body = $(%*{
+  var bodyObj = %*{
     "model": model,
     "messages": jsonMessages,
-    "stream": true
-  })
+    "stream": true,
+    "think": think
+  }
+  if tools != nil:
+    bodyObj["tools"] = tools
+
+  let body = $bodyObj
 
   let socket = newSocket()
   socket.connect(OllamaHost, OllamaPort)
@@ -51,7 +68,6 @@ proc chat*(model: string, messages: seq[Message]): string =
     body
   socket.send(request)
 
-  # Skip headers
   while true:
     let line = socket.recvLine()
     if line == "\r\n" or line.len == 0:
@@ -60,6 +76,7 @@ proc chat*(model: string, messages: seq[Message]): string =
   var inThinking = false
   var inContent = false
   var assistantContent = ""
+  var toolCalls: seq[ToolCall] = @[]
   var buffer = ""
 
   while true:
@@ -116,6 +133,17 @@ proc chat*(model: string, messages: seq[Message]): string =
             stdout.flushFile()
             assistantContent.add(c)
 
+        # Tool calls arrive as a complete array in a single chunk
+        if msg.hasKey("tool_calls"):
+          for tc in msg["tool_calls"]:
+            if tc.hasKey("function"):
+              let fn = tc["function"]
+              let name = fn["name"].getStr()
+              let args =
+                if fn.hasKey("arguments"): fn["arguments"]
+                else: newJObject()
+              toolCalls.add(ToolCall(name: name, arguments: args))
+
       if parsed.hasKey("done") and parsed["done"].getBool():
         echo ""
         if parsed.hasKey("eval_count") and parsed.hasKey("eval_duration"):
@@ -127,7 +155,7 @@ proc chat*(model: string, messages: seq[Message]): string =
             "[", $tokens, " tokens in ", formatFloat(durS, ffDecimal, 2), "s = ",
             formatFloat(tps, ffDecimal, 1), " tok/s]\n")
         socket.close()
-        return assistantContent
+        return ChatResponse(content: assistantContent, toolCalls: toolCalls)
 
   socket.close()
-  return assistantContent
+  return ChatResponse(content: assistantContent, toolCalls: toolCalls)

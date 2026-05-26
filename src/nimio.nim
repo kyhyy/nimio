@@ -3,7 +3,17 @@
 import std/[json, os, parseopt, strutils, tables, terminal]
 import ollama, tools
 
-const Model = "qwen3.6:35b"
+const
+  Model = "qwen3.6:35b"
+  SystemPrompt = """You are nimio, a minimal coding agent running in a terminal.
+
+You have four tools: read_file, write_file, edit_file, and bash. Use them to
+inspect and modify the user's project. All file paths are relative to the
+working directory.
+
+Be concise. Take action with tools rather than describing what you would do.
+If a tool returns an error, read the message and try a different approach.
+When you've finished the user's request, respond with a short summary."""
 
 type
   Config = object
@@ -12,7 +22,6 @@ type
 
 proc parseArgs(): Config =
   result.workdir = getCurrentDir()
-  result.testTools = false
 
   var p = initOptParser(commandLineParams())
   while true:
@@ -40,8 +49,6 @@ proc parseArgs(): Config =
     quit 1
 
 proc runToolTests(workdir: string) =
-  ## Run each tool with a hardcoded input and print the result. Used to
-  ## verify the tool layer before wiring it to the model.
   let registry = buildRegistry()
 
   template demo(name: string, args: JsonNode) =
@@ -49,38 +56,58 @@ proc runToolTests(workdir: string) =
     let r = dispatch(registry, name, args, workdir)
     echo r
 
-  # read a file we know exists
   demo "read_file", %*{"path": "nimio.nimble"}
-
-  # write a new file
-  demo "write_file", %*{"path": "/tmp_nimio_test.txt",
-                        "content": "hello from nimio\n"}
-  # (note: /tmp_nimio_test.txt is interpreted as relative to workdir,
-  #  not as an absolute path, because no leading workdir match would pass
-  #  containment. we expect this to error out — that's the test.)
-
-  # write inside workdir (this should succeed)
-  demo "write_file", %*{"path": "tmp_nimio_test.txt",
-                        "content": "hello from nimio\n"}
-
-  # edit that file
-  demo "edit_file", %*{"path": "tmp_nimio_test.txt",
-                       "old_str": "hello", "new_str": "greetings"}
-
-  # read it back to confirm
+  demo "write_file", %*{"path": "/tmp_nimio_test.txt", "content": "hello\n"}
+  demo "write_file", %*{"path": "tmp_nimio_test.txt", "content": "hello\n"}
+  demo "edit_file", %*{"path": "tmp_nimio_test.txt", "old_str": "hello", "new_str": "greetings"}
   demo "read_file", %*{"path": "tmp_nimio_test.txt"}
-
-  # run a bash command
   demo "bash", %*{"command": "ls -la tmp_nimio_test.txt"}
-
-  # try to escape the workdir
   demo "read_file", %*{"path": "../../../etc/passwd"}
-
-  # try a nonexistent tool
   demo "nope", %*{"x": 1}
-
-  # clean up
   demo "bash", %*{"command": "rm tmp_nimio_test.txt"}
+
+proc toolsSchema(registry: Table[string, Tool]): JsonNode =
+  ## Convert the registry to the JSON array Ollama expects in `tools`.
+  result = newJArray()
+  for t in registry.values:
+    result.add(%*{
+      "type": "function",
+      "function": {
+        "name": t.name,
+        "description": t.description,
+        "parameters": t.parameters
+      }
+    })
+
+proc agentTurn(model: string, registry: Table[string, Tool],
+               messages: var seq[Message], workdir: string) =
+  ## Inner loop: keep calling the model until it returns a turn with
+  ## no tool calls. Tool results are appended to `messages` as role=tool.
+  let toolsJson = toolsSchema(registry)
+
+  while true:
+    let response = chat(model, messages, tools = toolsJson, think = false)
+
+    # Always record what the model said, even if empty content.
+    # The model's tool_calls don't need to be in the history — Ollama
+    # reconstructs context from the tool result messages we add next.
+    if response.content.len > 0 or response.toolCalls.len == 0:
+      messages.add(Message(role: rAssistant, content: response.content))
+
+    if response.toolCalls.len == 0:
+      return  # turn complete
+
+    # Execute each tool call and append its result
+    for tc in response.toolCalls:
+      stdout.styledWrite(styleBright, "\n🔧 ", tc.name, " ", $tc.arguments, "\n")
+      let result = dispatch(registry, tc.name, tc.arguments, workdir)
+      # Show a preview of the result so the user can follow along
+      let preview =
+        if result.len > 500: result[0 ..< 500] & "\n... [" & $(result.len - 500) & " more bytes]"
+        else: result
+      stdout.styledWrite(styleDim, preview, "\n")
+
+      messages.add(Message(role: rTool, content: result, toolName: tc.name))
 
 proc main() =
   let cfg = parseArgs()
@@ -95,7 +122,11 @@ proc main() =
   echo "type a message and press Enter. Empty input or Ctrl+D to quit."
   echo ""
 
-  var messages: seq[Message] = @[]
+  let registry = buildRegistry()
+
+  var messages: seq[Message] = @[
+    Message(role: rSystem, content: SystemPrompt)
+  ]
 
   while true:
     stdout.styledWrite(styleBright, "> ")
@@ -114,9 +145,7 @@ proc main() =
       break
 
     messages.add(Message(role: rUser, content: trimmed))
-    let reply = chat(Model, messages)
-    messages.add(Message(role: rAssistant, content: reply))
-
+    agentTurn(Model, registry, messages, cfg.workdir)
     echo ""
 
 main()
