@@ -1,0 +1,6 @@
+nimcache/
+nimio
+*.exe
+nimble.develop
+nimble.paths
+nimbledeps
