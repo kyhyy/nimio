@@ -1,19 +1,18 @@
 ## nimio — minimal coding agent harness inspired by pi.
 
-import std/[os, parseopt, strutils, terminal]
-import ollama
+import std/[json, os, parseopt, strutils, tables, terminal]
+import ollama, tools
 
 const Model = "qwen3.6:35b"
 
 type
   Config = object
     workdir: string
+    testTools: bool
 
 proc parseArgs(): Config =
-  ## Parse command-line arguments. Supports:
-  ##   --workdir=<path>  (or -w=<path>)  set agent working directory
-  ## Defaults to current working directory.
   result.workdir = getCurrentDir()
+  result.testTools = false
 
   var p = initOptParser(commandLineParams())
   while true:
@@ -27,6 +26,8 @@ proc parseArgs(): Config =
           stderr.writeLine "error: --workdir requires a path"
           quit 1
         result.workdir = absolutePath(p.val)
+      of "test-tools":
+        result.testTools = true
       else:
         stderr.writeLine "error: unknown option --" & p.key
         quit 1
@@ -38,16 +39,56 @@ proc parseArgs(): Config =
     stderr.writeLine "error: workdir does not exist: " & result.workdir
     quit 1
 
-proc containsPath*(workdir, path: string): bool =
-  ## Returns true if `path` (after resolution) is inside `workdir`.
-  ## Used to keep tool calls from touching files outside the sandbox.
-  let absWork = absolutePath(workdir).normalizedPath()
-  let absPath = absolutePath(path).normalizedPath()
-  result = absPath == absWork or absPath.startsWith(absWork & DirSep)
+proc runToolTests(workdir: string) =
+  ## Run each tool with a hardcoded input and print the result. Used to
+  ## verify the tool layer before wiring it to the model.
+  let registry = buildRegistry()
+
+  template demo(name: string, args: JsonNode) =
+    stdout.styledWrite(styleBright, "\n--- ", name, " ", $args, " ---\n")
+    let r = dispatch(registry, name, args, workdir)
+    echo r
+
+  # read a file we know exists
+  demo "read_file", %*{"path": "nimio.nimble"}
+
+  # write a new file
+  demo "write_file", %*{"path": "/tmp_nimio_test.txt",
+                        "content": "hello from nimio\n"}
+  # (note: /tmp_nimio_test.txt is interpreted as relative to workdir,
+  #  not as an absolute path, because no leading workdir match would pass
+  #  containment. we expect this to error out — that's the test.)
+
+  # write inside workdir (this should succeed)
+  demo "write_file", %*{"path": "tmp_nimio_test.txt",
+                        "content": "hello from nimio\n"}
+
+  # edit that file
+  demo "edit_file", %*{"path": "tmp_nimio_test.txt",
+                       "old_str": "hello", "new_str": "greetings"}
+
+  # read it back to confirm
+  demo "read_file", %*{"path": "tmp_nimio_test.txt"}
+
+  # run a bash command
+  demo "bash", %*{"command": "ls -la tmp_nimio_test.txt"}
+
+  # try to escape the workdir
+  demo "read_file", %*{"path": "../../../etc/passwd"}
+
+  # try a nonexistent tool
+  demo "nope", %*{"x": 1}
+
+  # clean up
+  demo "bash", %*{"command": "rm tmp_nimio_test.txt"}
 
 proc main() =
   let cfg = parseArgs()
   setCurrentDir(cfg.workdir)
+
+  if cfg.testTools:
+    runToolTests(cfg.workdir)
+    return
 
   echo "nimio — talking to ", Model
   echo "workdir: ", cfg.workdir
