@@ -10,4 +10,4 @@ bin           = @["nimio"]
 
 # Dependencies
 
-requires "nim >= 2.2.10"
+requires "nim >= 2.0.0"
