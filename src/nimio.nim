@@ -22,6 +22,7 @@ type
 
 proc parseArgs(): Config =
   result.workdir = getCurrentDir()
+  var workdirSet = false
 
   var p = initOptParser(commandLineParams())
   while true:
@@ -34,15 +35,19 @@ proc parseArgs(): Config =
         if p.val.len == 0:
           stderr.writeLine "error: --workdir requires a path"
           quit 1
-        result.workdir = absolutePath(p.val)
+        result.workdir = absolutePath(expandTilde(p.val))
+        workdirSet = true
       of "test-tools":
         result.testTools = true
       else:
         stderr.writeLine "error: unknown option --" & p.key
         quit 1
     of cmdArgument:
-      stderr.writeLine "error: unexpected argument: " & p.key
-      quit 1
+      if workdirSet:
+        stderr.writeLine "error: unexpected argument: " & p.key
+        quit 1
+      result.workdir = absolutePath(expandTilde(p.key))
+      workdirSet = true
 
   if not dirExists(result.workdir):
     stderr.writeLine "error: workdir does not exist: " & result.workdir
@@ -67,7 +72,6 @@ proc runToolTests(workdir: string) =
   demo "bash", %*{"command": "rm tmp_nimio_test.txt"}
 
 proc toolsSchema(registry: Table[string, Tool]): JsonNode =
-  ## Convert the registry to the JSON array Ollama expects in `tools`.
   result = newJArray()
   for t in registry.values:
     result.add(%*{
@@ -81,27 +85,20 @@ proc toolsSchema(registry: Table[string, Tool]): JsonNode =
 
 proc agentTurn(model: string, registry: Table[string, Tool],
                messages: var seq[Message], workdir: string) =
-  ## Inner loop: keep calling the model until it returns a turn with
-  ## no tool calls. Tool results are appended to `messages` as role=tool.
   let toolsJson = toolsSchema(registry)
 
   while true:
     let response = chat(model, messages, tools = toolsJson, think = false)
 
-    # Always record what the model said, even if empty content.
-    # The model's tool_calls don't need to be in the history — Ollama
-    # reconstructs context from the tool result messages we add next.
     if response.content.len > 0 or response.toolCalls.len == 0:
       messages.add(Message(role: rAssistant, content: response.content))
 
     if response.toolCalls.len == 0:
-      return  # turn complete
+      return
 
-    # Execute each tool call and append its result
     for tc in response.toolCalls:
       stdout.styledWrite(styleBright, "\n🔧 ", tc.name, " ", $tc.arguments, "\n")
       let result = dispatch(registry, tc.name, tc.arguments, workdir)
-      # Show a preview of the result so the user can follow along
       let preview =
         if result.len > 500: result[0 ..< 500] & "\n... [" & $(result.len - 500) & " more bytes]"
         else: result
