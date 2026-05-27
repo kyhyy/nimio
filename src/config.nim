@@ -16,6 +16,7 @@ type
     agentMd*: Option[string]
     maxToolCalls*: Option[int]
     think*: Option[bool]
+    contextSize*: Option[int]
 
 const ConfigFileName* = "nimio.config.toml"
 
@@ -64,3 +65,4 @@ proc loadConfig*(workdir: string): FileConfig =
   tryStr(agentMd, "agent_md")
   tryInt(maxToolCalls, "max_tool_calls")
   tryBool(think, "think")
+  tryInt(contextSize, "context_size")

@@ -28,6 +28,8 @@ type
   ChatResponse* = object
     content*: string
     toolCalls*: seq[ToolCall]
+    promptTokens*: int
+    outputTokens*: int
 
 proc toJson*(m: Message): JsonNode =
   result = %*{"role": $m.role, "content": m.content}
@@ -146,16 +148,26 @@ proc chat*(model: string, messages: seq[Message],
 
       if parsed.hasKey("done") and parsed["done"].getBool():
         echo ""
+        var promptTokens = 0
+        var outputTokens = 0
+        if parsed.hasKey("prompt_eval_count"):
+          promptTokens = parsed["prompt_eval_count"].getInt()
         if parsed.hasKey("eval_count") and parsed.hasKey("eval_duration"):
-          let tokens = parsed["eval_count"].getInt()
+          outputTokens = parsed["eval_count"].getInt()
           let durNs = parsed["eval_duration"].getInt()
           let durS = durNs.float / 1_000_000_000.0
-          let tps = tokens.float / durS
+          let tps = outputTokens.float / durS
           stdout.styledWrite(styleDim,
-            "[", $tokens, " tokens in ", formatFloat(durS, ffDecimal, 2), "s = ",
+            "[", $outputTokens, " tokens in ", formatFloat(durS, ffDecimal, 2), "s = ",
             formatFloat(tps, ffDecimal, 1), " tok/s]\n")
         socket.close()
-        return ChatResponse(content: assistantContent, toolCalls: toolCalls)
+        return ChatResponse(
+          content: assistantContent,
+          toolCalls: toolCalls,
+          promptTokens: promptTokens,
+          outputTokens: outputTokens
+        )
 
   socket.close()
-  return ChatResponse(content: assistantContent, toolCalls: toolCalls)
+  return ChatResponse(content: assistantContent, toolCalls: toolCalls,
+                       promptTokens: 0, outputTokens: 0)

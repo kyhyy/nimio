@@ -7,6 +7,7 @@ const
   DefaultModel = "qwen3.6:35b"
   DefaultMaxToolCalls = 30
   DefaultThink = false
+  DefaultContextSize = 32768
   DefaultSystemPrompt = """You are nimio, a minimal coding agent running in a terminal.
 
 You have four tools: read_file, write_file, edit_file, and bash. Use them to
@@ -19,21 +20,18 @@ When you've finished the user's request, respond with a short summary."""
 
 type
   Args = object
-    ## What the user passed on the command line. Mirrors FileConfig
-    ## structurally — Options where "not specified" matters.
     workdir: string
     model: Option[string]
     maxToolCalls: Option[int]
     testTools: bool
 
   ResolvedConfig = object
-    ## Everything merged: CLI > file > defaults. No more Options after
-    ## this point; every field has a value.
     workdir: string
     model: string
     maxToolCalls: int
     think: bool
     systemPrompt: string
+    contextSize: int
     testTools: bool
 
 proc parseArgs(): Args =
@@ -88,11 +86,9 @@ proc parseArgs(): Args =
     quit 1
 
 proc resolveConfig(args: Args): ResolvedConfig =
-  ## Merge: CLI args > config file > defaults.
   result.workdir = args.workdir
   result.testTools = args.testTools
 
-  # Load the file (may raise on malformed TOML).
   let fileCfg =
     try:
       loadConfig(args.workdir)
@@ -100,7 +96,6 @@ proc resolveConfig(args: Args): ResolvedConfig =
       stderr.writeLine "error: " & e.msg
       quit 1
 
-  # For each field: prefer CLI, then file, then default.
   result.model =
     if args.model.isSome: args.model.get()
     elif fileCfg.model.isSome: fileCfg.model.get()
@@ -115,8 +110,10 @@ proc resolveConfig(args: Args): ResolvedConfig =
     if fileCfg.think.isSome: fileCfg.think.get()
     else: DefaultThink
 
-  # System prompt: start with file's prompt or default, then prepend
-  # agent_md contents if the file specifies one.
+  result.contextSize =
+    if fileCfg.contextSize.isSome: fileCfg.contextSize.get()
+    else: DefaultContextSize
+
   result.systemPrompt =
     if fileCfg.systemPrompt.isSome: fileCfg.systemPrompt.get()
     else: DefaultSystemPrompt
@@ -170,13 +167,15 @@ proc confirmContinue(used: int): bool =
     return false
 
 proc agentTurn(cfg: ResolvedConfig, registry: Table[string, Tool],
-               messages: var seq[Message]) =
+               messages: var seq[Message]): tuple[promptTokens, outputTokens: int] =
   let toolsJson = toolsSchema(registry)
   var toolCallsUsed = 0
   var budget = cfg.maxToolCalls
 
   while true:
     let response = chat(cfg.model, messages, tools = toolsJson, think = cfg.think)
+    result.promptTokens = response.promptTokens
+    result.outputTokens = response.outputTokens
 
     if response.content.len > 0 or response.toolCalls.len == 0:
       messages.add(Message(role: rAssistant, content: response.content))
@@ -186,13 +185,13 @@ proc agentTurn(cfg: ResolvedConfig, registry: Table[string, Tool],
 
     for tc in response.toolCalls:
       stdout.styledWrite(styleBright, "\n🔧 ", tc.name, " ", $tc.arguments, "\n")
-      let result = dispatch(registry, tc.name, tc.arguments, cfg.workdir)
+      let res = dispatch(registry, tc.name, tc.arguments, cfg.workdir)
       let preview =
-        if result.len > 500: result[0 ..< 500] & "\n... [" & $(result.len - 500) & " more bytes]"
-        else: result
+        if res.len > 500: res[0 ..< 500] & "\n... [" & $(res.len - 500) & " more bytes]"
+        else: res
       stdout.styledWrite(styleDim, preview, "\n")
 
-      messages.add(Message(role: rTool, content: result, toolName: tc.name))
+      messages.add(Message(role: rTool, content: res, toolName: tc.name))
       toolCallsUsed.inc
 
     if toolCallsUsed >= budget:
@@ -202,6 +201,8 @@ proc agentTurn(cfg: ResolvedConfig, registry: Table[string, Tool],
         messages.add(Message(role: rUser,
           content: "(user interrupted: max_tool_calls reached. summarize what you've done so far.)"))
         let final = chat(cfg.model, messages, tools = toolsJson, think = cfg.think)
+        result.promptTokens = final.promptTokens
+        result.outputTokens = final.outputTokens
         if final.content.len > 0:
           messages.add(Message(role: rAssistant, content: final.content))
         return
@@ -246,7 +247,12 @@ proc main() =
       break
 
     messages.add(Message(role: rUser, content: trimmed))
-    agentTurn(cfg, registry, messages)
+    let usage = agentTurn(cfg, registry, messages)
+    let totalCtx = usage.promptTokens + usage.outputTokens
+    let pct = (totalCtx.float / cfg.contextSize.float * 100.0)
+    stdout.styledWrite(styleDim,
+      "[context: ", $totalCtx, " / ", $cfg.contextSize, " (",
+      formatFloat(pct, ffDecimal, 1), "%)]\n")
     echo ""
 
 main()
