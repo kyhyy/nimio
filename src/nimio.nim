@@ -4,7 +4,8 @@ import std/[json, os, parseopt, strutils, tables, terminal]
 import ollama, tools
 
 const
-  Model = "qwen3.6:35b"
+  DefaultModel = "qwen3.6:35b"
+  DefaultMaxToolCalls = 30
   SystemPrompt = """You are nimio, a minimal coding agent running in a terminal.
 
 You have four tools: read_file, write_file, edit_file, and bash. Use them to
@@ -18,10 +19,14 @@ When you've finished the user's request, respond with a short summary."""
 type
   Config = object
     workdir: string
+    model: string
+    maxToolCalls: int
     testTools: bool
 
 proc parseArgs(): Config =
   result.workdir = getCurrentDir()
+  result.model = DefaultModel
+  result.maxToolCalls = DefaultMaxToolCalls
   var workdirSet = false
 
   var p = initOptParser(commandLineParams())
@@ -37,6 +42,23 @@ proc parseArgs(): Config =
           quit 1
         result.workdir = absolutePath(expandTilde(p.val))
         workdirSet = true
+      of "model", "m":
+        if p.val.len == 0:
+          stderr.writeLine "error: --model requires a value"
+          quit 1
+        result.model = p.val
+      of "max-tool-calls":
+        if p.val.len == 0:
+          stderr.writeLine "error: --max-tool-calls requires a value"
+          quit 1
+        try:
+          result.maxToolCalls = parseInt(p.val)
+        except ValueError:
+          stderr.writeLine "error: --max-tool-calls must be an integer"
+          quit 1
+        if result.maxToolCalls < 1:
+          stderr.writeLine "error: --max-tool-calls must be >= 1"
+          quit 1
       of "test-tools":
         result.testTools = true
       else:
@@ -83,9 +105,24 @@ proc toolsSchema(registry: Table[string, Tool]): JsonNode =
       }
     })
 
+proc confirmContinue(used: int): bool =
+  ## Ask the user whether to keep going after hitting max_tool_calls.
+  ## Returns true to continue, false to stop.
+  stdout.styledWrite(styleBright,
+    "\n⚠️  hit ", $used, " tool calls in this turn. continue? [y/N] ")
+  stdout.flushFile()
+  try:
+    let answer = stdin.readLine().strip().toLowerAscii()
+    return answer == "y" or answer == "yes"
+  except EOFError:
+    return false
+
 proc agentTurn(model: string, registry: Table[string, Tool],
-               messages: var seq[Message], workdir: string) =
+               messages: var seq[Message], workdir: string,
+               maxToolCalls: int) =
   let toolsJson = toolsSchema(registry)
+  var toolCallsUsed = 0
+  var budget = maxToolCalls
 
   while true:
     let response = chat(model, messages, tools = toolsJson, think = false)
@@ -105,6 +142,21 @@ proc agentTurn(model: string, registry: Table[string, Tool],
       stdout.styledWrite(styleDim, preview, "\n")
 
       messages.add(Message(role: rTool, content: result, toolName: tc.name))
+      toolCallsUsed.inc
+
+    if toolCallsUsed >= budget:
+      if confirmContinue(toolCallsUsed):
+        # User wants to keep going; extend the budget by another batch
+        budget += maxToolCalls
+      else:
+        # Add a synthetic message so the model knows we stopped it
+        messages.add(Message(role: rUser,
+          content: "(user interrupted: max_tool_calls reached. summarize what you've done so far.)"))
+        # One more turn for the wrap-up, then we return
+        let final = chat(model, messages, tools = toolsJson, think = false)
+        if final.content.len > 0:
+          messages.add(Message(role: rAssistant, content: final.content))
+        return
 
 proc main() =
   let cfg = parseArgs()
@@ -114,7 +166,7 @@ proc main() =
     runToolTests(cfg.workdir)
     return
 
-  echo "nimio — talking to ", Model
+  echo "nimio — talking to ", cfg.model
   echo "workdir: ", cfg.workdir
   echo "type a message and press Enter. Empty input or Ctrl+D to quit."
   echo ""
@@ -142,7 +194,7 @@ proc main() =
       break
 
     messages.add(Message(role: rUser, content: trimmed))
-    agentTurn(Model, registry, messages, cfg.workdir)
+    agentTurn(cfg.model, registry, messages, cfg.workdir, cfg.maxToolCalls)
     echo ""
 
 main()
