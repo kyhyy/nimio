@@ -177,8 +177,14 @@ proc agentTurn(cfg: ResolvedConfig, registry: Table[string, Tool],
     result.promptTokens = response.promptTokens
     result.outputTokens = response.outputTokens
 
-    if response.content.len > 0 or response.toolCalls.len == 0:
-      messages.add(Message(role: rAssistant, content: response.content))
+    # Always record the assistant turn when it produced anything — text OR
+    # tool calls. The previous condition skipped tool-call-only turns (empty
+    # content + calls), which dropped the assistant's tool_calls from history.
+    # The tool results that followed then looked like they came out of nowhere,
+    # so the model reattributed them to the user.
+    if response.content.len > 0 or response.toolCalls.len > 0:
+      messages.add(Message(role: rAssistant, content: response.content,
+                           toolCalls: response.toolCalls))
 
     if response.toolCalls.len == 0:
       return
@@ -191,7 +197,7 @@ proc agentTurn(cfg: ResolvedConfig, registry: Table[string, Tool],
         else: res
       stdout.styledWrite(styleDim, preview, "\n")
 
-      messages.add(Message(role: rTool, content: res, toolName: tc.name))
+      messages.add(Message(role: rTool, content: res))
       toolCallsUsed.inc
 
     if toolCallsUsed >= budget:

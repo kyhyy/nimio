@@ -16,14 +16,14 @@ type
     rSystem = "system"
     rTool = "tool"
 
-  Message* = object
-    role*: Role
-    content*: string
-    toolName*: string  # only for role=rTool: which tool produced this result
-
   ToolCall* = object
     name*: string
     arguments*: JsonNode
+
+  Message* = object
+    role*: Role
+    content*: string
+    toolCalls*: seq[ToolCall]  # only for role=rAssistant: calls the model emitted
 
   ChatResponse* = object
     content*: string
@@ -33,8 +33,11 @@ type
 
 proc toJson*(m: Message): JsonNode =
   result = %*{"role": $m.role, "content": m.content}
-  if m.role == rTool and m.toolName.len > 0:
-    result["tool_name"] = %m.toolName
+  if m.role == rAssistant and m.toolCalls.len > 0:
+    var arr = newJArray()
+    for tc in m.toolCalls:
+      arr.add(%*{"function": {"name": tc.name, "arguments": tc.arguments}})
+    result["tool_calls"] = arr
 
 proc chat*(model: string, messages: seq[Message],
            tools: JsonNode = nil,
