@@ -41,9 +41,12 @@ proc toJson*(m: Message): JsonNode =
 
 proc chat*(model: string, messages: seq[Message],
            tools: JsonNode = nil,
-           think: bool = false): ChatResponse =
+           think: bool = false,
+           numCtx: int = 0): ChatResponse =
   ## Send a chat request to Ollama and stream the response.
   ## Returns the accumulated content and any tool_calls the model emitted.
+  ## If numCtx > 0, request that context window via options.num_ctx; the
+  ## model is (re)loaded at that size on the next call.
 
   var jsonMessages = newJArray()
   for m in messages:
@@ -55,6 +58,8 @@ proc chat*(model: string, messages: seq[Message],
     "stream": true,
     "think": think
   }
+  if numCtx > 0:
+    bodyObj["options"] = %*{"num_ctx": numCtx}
   if tools != nil:
     bodyObj["tools"] = tools
 

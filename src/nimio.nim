@@ -173,7 +173,8 @@ proc agentTurn(cfg: ResolvedConfig, registry: Table[string, Tool],
   var budget = cfg.maxToolCalls
 
   while true:
-    let response = chat(cfg.model, messages, tools = toolsJson, think = cfg.think)
+    let response = chat(cfg.model, messages, tools = toolsJson,
+                        think = cfg.think, numCtx = cfg.contextSize)
     result.promptTokens = response.promptTokens
     result.outputTokens = response.outputTokens
 
@@ -206,7 +207,8 @@ proc agentTurn(cfg: ResolvedConfig, registry: Table[string, Tool],
       else:
         messages.add(Message(role: rUser,
           content: "(user interrupted: max_tool_calls reached. summarize what you've done so far.)"))
-        let final = chat(cfg.model, messages, tools = toolsJson, think = cfg.think)
+        let final = chat(cfg.model, messages, tools = toolsJson,
+                         think = cfg.think, numCtx = cfg.contextSize)
         result.promptTokens = final.promptTokens
         result.outputTokens = final.outputTokens
         if final.content.len > 0:

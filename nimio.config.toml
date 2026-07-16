@@ -1,0 +1,4 @@
+model = "bonsai-27b"
+max_tool_calls = 30
+think = true
+context_size = 32768
