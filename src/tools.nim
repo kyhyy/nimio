@@ -91,6 +91,51 @@ proc editFileTool(args: JsonNode, workdir: string): string {.gcsafe.} =
   writeFile(path, updated)
   return "edited " & path
 
+proc grepTool(args: JsonNode, workdir: string): string {.gcsafe.} =
+  if not args.hasKey("pattern"):
+    raise newException(ValueError, "missing required argument 'pattern'")
+  let pattern = args["pattern"].getStr()
+  if pattern.len == 0:
+    raise newException(ValueError, "pattern must not be empty")
+  let pathArg = if args.hasKey("path"): args["path"].getStr() else: "."
+  let searchRoot = resolveInside(workdir, pathArg)
+  if not (dirExists(searchRoot) or fileExists(searchRoot)):
+    raise newException(ValueError, "path does not exist: " & pathArg)
+
+  const maxMatches = 200
+  var matches: seq[string] = @[]
+
+  proc searchFile(path: string) =
+    if matches.len >= maxMatches: return
+    var content: string
+    try:
+      content = readFile(path)
+    except IOError:
+      return
+    if '\0' in content:
+      return  # skip binary files
+    var lineNo = 0
+    for line in content.splitLines():
+      inc lineNo
+      if line.contains(pattern):
+        matches.add(path.relativePath(workdir) & ":" & $lineNo & ":" & line)
+        if matches.len >= maxMatches: break
+
+  if fileExists(searchRoot):
+    searchFile(searchRoot)
+  else:
+    for path in walkDirRec(searchRoot):
+      if ".git" in path.relativePath(searchRoot).split(DirSep):
+        continue
+      searchFile(path)
+      if matches.len >= maxMatches: break
+
+  if matches.len == 0:
+    return "no matches for '" & pattern & "'"
+  result = matches.join("\n")
+  if matches.len >= maxMatches:
+    result.add("\n... [truncated at " & $maxMatches & " matches]")
+
 proc bashTool(args: JsonNode, workdir: string): string {.gcsafe.} =
   if not args.hasKey("command"):
     raise newException(ValueError, "missing required argument 'command'")
@@ -151,6 +196,20 @@ proc buildRegistry*(): Table[string, Tool] =
       "required": ["path", "old_str", "new_str"]
     },
     run: editFileTool
+  )
+
+  result["grep"] = Tool(
+    name: "grep",
+    description: "Search for a plain-text substring (not a regex) in a file or recursively under a directory. Returns matching lines as path:line:content.",
+    parameters: %*{
+      "type": "object",
+      "properties": {
+        "pattern": {"type": "string", "description": "Substring to search for."},
+        "path": {"type": "string", "description": "File or directory to search, relative to workdir. Defaults to the whole workdir."}
+      },
+      "required": ["pattern"]
+    },
+    run: grepTool
   )
 
   result["bash"] = Tool(

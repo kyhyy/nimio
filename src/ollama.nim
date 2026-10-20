@@ -4,6 +4,7 @@
 ## behavior, or workdir — those live in higher layers.
 
 import std/[net, json, strutils, terminal]
+import httpstream
 
 const
   OllamaHost* = "localhost"
@@ -17,6 +18,7 @@ type
     rTool = "tool"
 
   ToolCall* = object
+    id*: string
     name*: string
     arguments*: JsonNode
 
@@ -24,6 +26,7 @@ type
     role*: Role
     content*: string
     toolCalls*: seq[ToolCall]  # only for role=rAssistant: calls the model emitted
+    toolCallId*: string        # only for role=rTool: id of the call this answers
 
   ChatResponse* = object
     content*: string
@@ -36,8 +39,21 @@ proc toJson*(m: Message): JsonNode =
   if m.role == rAssistant and m.toolCalls.len > 0:
     var arr = newJArray()
     for tc in m.toolCalls:
-      arr.add(%*{"function": {"name": tc.name, "arguments": tc.arguments}})
+      arr.add(%*{"id": tc.id, "function": {"name": tc.name, "arguments": tc.arguments}})
     result["tool_calls"] = arr
+  if m.role == rTool and m.toolCallId.len > 0:
+    result["tool_call_id"] = %m.toolCallId
+
+proc messageFromJson*(j: JsonNode): Message =
+  result.role = parseEnum[Role](j["role"].getStr())
+  result.content = j["content"].getStr()
+  if j.hasKey("tool_calls"):
+    for tc in j["tool_calls"]:
+      let fn = tc["function"]
+      let id = if tc.hasKey("id"): tc["id"].getStr() else: ""
+      result.toolCalls.add(ToolCall(id: id, name: fn["name"].getStr(), arguments: fn["arguments"]))
+  if j.hasKey("tool_call_id"):
+    result.toolCallId = j["tool_call_id"].getStr()
 
 proc chat*(model: string, messages: seq[Message],
            tools: JsonNode = nil,
@@ -77,105 +93,75 @@ proc chat*(model: string, messages: seq[Message],
     "\r\n" &
     body
   socket.send(request)
-
-  while true:
-    let line = socket.recvLine()
-    if line == "\r\n" or line.len == 0:
-      break
+  let resp = readHeaders(socket)
 
   var inThinking = false
   var inContent = false
   var assistantContent = ""
   var toolCalls: seq[ToolCall] = @[]
-  var buffer = ""
+  var promptTokens = 0
+  var outputTokens = 0
 
-  while true:
-    let sizeLine = socket.recvLine().strip()
-    if sizeLine.len == 0:
-      break
-    let chunkSize = parseHexInt(sizeLine)
-    if chunkSize == 0:
-      break
+  proc handleLine(line: string) =
+    let parsed = parseJson(line)
 
-    var chunkData = newString(chunkSize)
-    var received = 0
-    while received < chunkSize:
-      let n = socket.recv(addr chunkData[received], chunkSize - received)
-      if n <= 0:
-        break
-      received += n
+    if parsed.hasKey("message"):
+      let msg = parsed["message"]
 
-    discard socket.recvLine()
-    buffer.add(chunkData)
+      if msg.hasKey("thinking"):
+        let t = msg["thinking"].getStr()
+        if t.len > 0:
+          if not inThinking:
+            stdout.styledWrite(styleDim, "🤔 thinking...\n")
+            inThinking = true
+          stdout.styledWrite(styleDim, t)
+          stdout.flushFile()
 
-    while true:
-      let nl = buffer.find('\n')
-      if nl == -1:
-        break
-      let line = buffer[0 ..< nl]
-      buffer = buffer[nl + 1 .. ^1]
-      if line.len == 0:
-        continue
+      if msg.hasKey("content"):
+        let c = msg["content"].getStr()
+        if c.len > 0:
+          if not inContent:
+            if inThinking:
+              stdout.write("\n\n")
+            stdout.styledWrite(styleBright, "💬 ")
+            inContent = true
+          stdout.write(c)
+          stdout.flushFile()
+          assistantContent.add(c)
 
-      let parsed = parseJson(line)
+      # Tool calls arrive as a complete array in a single chunk
+      if msg.hasKey("tool_calls"):
+        for tc in msg["tool_calls"]:
+          if tc.hasKey("function"):
+            let fn = tc["function"]
+            let name = fn["name"].getStr()
+            let args =
+              if fn.hasKey("arguments"): fn["arguments"]
+              else: newJObject()
+            let id =
+              if tc.hasKey("id"): tc["id"].getStr()
+              else: "call_" & $toolCalls.len
+            toolCalls.add(ToolCall(id: id, name: name, arguments: args))
 
-      if parsed.hasKey("message"):
-        let msg = parsed["message"]
+    if parsed.hasKey("done") and parsed["done"].getBool():
+      echo ""
+      if parsed.hasKey("prompt_eval_count"):
+        promptTokens = parsed["prompt_eval_count"].getInt()
+      if parsed.hasKey("eval_count") and parsed.hasKey("eval_duration"):
+        outputTokens = parsed["eval_count"].getInt()
+        let durNs = parsed["eval_duration"].getInt()
+        let durS = durNs.float / 1_000_000_000.0
+        let tps = outputTokens.float / durS
+        stdout.styledWrite(styleDim,
+          "[", $outputTokens, " tokens in ", formatFloat(durS, ffDecimal, 2), "s = ",
+          formatFloat(tps, ffDecimal, 1), " tok/s]\n")
 
-        if msg.hasKey("thinking"):
-          let t = msg["thinking"].getStr()
-          if t.len > 0:
-            if not inThinking:
-              stdout.styledWrite(styleDim, "🤔 thinking...\n")
-              inThinking = true
-            stdout.styledWrite(styleDim, t)
-            stdout.flushFile()
-
-        if msg.hasKey("content"):
-          let c = msg["content"].getStr()
-          if c.len > 0:
-            if not inContent:
-              if inThinking:
-                stdout.write("\n\n")
-              stdout.styledWrite(styleBright, "💬 ")
-              inContent = true
-            stdout.write(c)
-            stdout.flushFile()
-            assistantContent.add(c)
-
-        # Tool calls arrive as a complete array in a single chunk
-        if msg.hasKey("tool_calls"):
-          for tc in msg["tool_calls"]:
-            if tc.hasKey("function"):
-              let fn = tc["function"]
-              let name = fn["name"].getStr()
-              let args =
-                if fn.hasKey("arguments"): fn["arguments"]
-                else: newJObject()
-              toolCalls.add(ToolCall(name: name, arguments: args))
-
-      if parsed.hasKey("done") and parsed["done"].getBool():
-        echo ""
-        var promptTokens = 0
-        var outputTokens = 0
-        if parsed.hasKey("prompt_eval_count"):
-          promptTokens = parsed["prompt_eval_count"].getInt()
-        if parsed.hasKey("eval_count") and parsed.hasKey("eval_duration"):
-          outputTokens = parsed["eval_count"].getInt()
-          let durNs = parsed["eval_duration"].getInt()
-          let durS = durNs.float / 1_000_000_000.0
-          let tps = outputTokens.float / durS
-          stdout.styledWrite(styleDim,
-            "[", $outputTokens, " tokens in ", formatFloat(durS, ffDecimal, 2), "s = ",
-            formatFloat(tps, ffDecimal, 1), " tok/s]\n")
-        socket.close()
-        return ChatResponse(
-          content: assistantContent,
-          toolCalls: toolCalls,
-          promptTokens: promptTokens,
-          outputTokens: outputTokens
-        )
-
+  if resp.chunked:
+    readChunkedLines(socket, handleLine)
+  elif resp.contentLength > 0:
+    assistantContent = "[ollama error] " & readFixedBody(socket, resp.contentLength)
+    stdout.styledWrite(styleBright, "💬 ")
+    stdout.write(assistantContent)
   socket.close()
   return ChatResponse(content: assistantContent, toolCalls: toolCalls,
-                       promptTokens: 0, outputTokens: 0)
+                       promptTokens: promptTokens, outputTokens: outputTokens)

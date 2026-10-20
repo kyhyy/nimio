@@ -11,11 +11,12 @@ I'm currently using it myself to write another project of mine, [theCrap](https:
 
 ## What it does
 
-Four tools, an inner agent loop, and a streaming chat client. That's it.
+Five tools, an inner agent loop, and a streaming chat client. That's it.
 
 - **`read_file`** - read file contents
 - **`write_file`** - create or overwrite a file
 - **`edit_file`** - find-and-replace (must match exactly once)
+- **`grep`** - plain-text substring search in a file or recursively under a directory
 - **`bash`** - run a shell command
 
 All file operations are constrained to a working directory (defaults to
@@ -66,8 +67,17 @@ Other flags:
 
 - `--model=<name>` (or `-m`) pick the Ollama model for this run
 - `--max-tool-calls=<n>` cap how many tools the model can call in one turn before nimio asks if you want to keep going (default 30)
+- `--resume` continue the last session saved for this workdir, if one exists
 
 CLI flags override anything set in the config file.
+
+## Sessions
+
+After every turn, nimio saves the full conversation to a per-workdir file
+under `$XDG_STATE_HOME/nimio/sessions` (or `~/.local/state/nimio/sessions`
+if unset), named by an MD5 hash of the workdir's absolute path. Run with
+`--resume` to pick that conversation back up; without it, nimio starts
+fresh and overwrites the saved file as the new conversation progresses.
 
 ## Configuration
 
@@ -119,7 +129,8 @@ src/
 ├── nimio.nim      # entry point, agent loop, REPL, arg + config resolution
 ├── ollama.nim     # HTTP/streaming client, message types
 ├── tools.nim      # tool definitions, dispatch, path containment
-└── config.nim     # nimio.config.toml loader
+├── config.nim     # nimio.config.toml loader
+└── session.nim    # conversation save/load for --resume
 ```
 
 ## License

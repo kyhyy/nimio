@@ -17,6 +17,9 @@ type
     maxToolCalls*: Option[int]
     think*: Option[bool]
     contextSize*: Option[int]
+    provider*: Option[string]   # "ollama" (default) or "openai"
+    baseUrl*: Option[string]    # required for provider = "openai"
+    apiKeyEnv*: Option[string]  # env var holding the API key; default OPENAI_API_KEY
 
 const ConfigFileName* = "nimio.config.toml"
 
@@ -66,3 +69,6 @@ proc loadConfig*(workdir: string): FileConfig =
   tryInt(maxToolCalls, "max_tool_calls")
   tryBool(think, "think")
   tryInt(contextSize, "context_size")
+  tryStr(provider, "provider")
+  tryStr(baseUrl, "base_url")
+  tryStr(apiKeyEnv, "api_key_env")
