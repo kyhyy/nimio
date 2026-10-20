@@ -36,7 +36,8 @@ proc chat*(baseUrl, apiKey, model: string, messages: seq[Message],
   for m in messages:
     jsonMessages.add(m.toWireJson())
 
-  var bodyObj = %*{"model": model, "messages": jsonMessages, "stream": true}
+  var bodyObj = %*{"model": model, "messages": jsonMessages, "stream": true,
+                   "stream_options": {"include_usage": true}}
   if tools != nil:
     bodyObj["tools"] = tools
   let body = $bodyObj
@@ -61,6 +62,8 @@ proc chat*(baseUrl, apiKey, model: string, messages: seq[Message],
 
   var inContent = false
   var assistantContent = ""
+  var promptTokens = 0
+  var outputTokens = 0
   var toolCallIds = initTable[int, string]()
   var toolCallNames = initTable[int, string]()
   var toolCallArgs = initTable[int, string]()
@@ -70,6 +73,12 @@ proc chat*(baseUrl, apiKey, model: string, messages: seq[Message],
     let payload = line[5 .. ^1].strip()
     if payload == "[DONE]" or payload.len == 0: return
     let parsed = parseJson(payload)
+    if parsed.hasKey("usage") and parsed["usage"].kind == JObject:
+      let u = parsed["usage"]
+      if u.hasKey("prompt_tokens") and u["prompt_tokens"].kind == JInt:
+        promptTokens = u["prompt_tokens"].getInt()
+      if u.hasKey("completion_tokens") and u["completion_tokens"].kind == JInt:
+        outputTokens = u["completion_tokens"].getInt()
     if not parsed.hasKey("choices") or parsed["choices"].len == 0: return
     let choice = parsed["choices"][0]
     if not choice.hasKey("delta"): return
@@ -100,7 +109,11 @@ proc chat*(baseUrl, apiKey, model: string, messages: seq[Message],
   if resp.chunked:
     readChunkedLines(socket, handleLine)
   elif resp.contentLength > 0:
-    assistantContent = "[provider error] " & readFixedBody(socket, resp.contentLength)
+    let bodyText = readFixedBody(socket, resp.contentLength)
+    if resp.status >= 400:
+      assistantContent = "[provider error " & $resp.status & "] " & bodyText
+    else:
+      assistantContent = bodyText
     stdout.styledWrite(styleBright, "💬 ")
     stdout.write(assistantContent)
   socket.close()
@@ -115,4 +128,4 @@ proc chat*(baseUrl, apiKey, model: string, messages: seq[Message],
                            name: name, arguments: argsJson))
 
   return ChatResponse(content: assistantContent, toolCalls: toolCalls,
-                       promptTokens: 0, outputTokens: 0)
+                       promptTokens: promptTokens, outputTokens: outputTokens)

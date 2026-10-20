@@ -6,6 +6,7 @@ import std/[net, strutils]
 
 type
   ResponseInfo* = object
+    status*: int
     chunked*: bool
     contentLength*: int
 
@@ -16,6 +17,12 @@ proc readHeaders*(socket: Socket): ResponseInfo =
   ## of chunked encoding, and must be read differently: recvLine returns
   ## "" if the connection closes before a newline, which would otherwise
   ## look like "no more chunks" and silently swallow the body.
+  let statusLine = socket.recvLine()
+  # e.g. "HTTP/1.1 200 OK" -> 200
+  let parts = statusLine.split(' ')
+  if parts.len >= 2:
+    try: result.status = parseInt(parts[1])
+    except ValueError: result.status = 0
   while true:
     let line = socket.recvLine()
     if line == "\r\n" or line.len == 0: break

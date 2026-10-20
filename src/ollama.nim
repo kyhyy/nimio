@@ -159,7 +159,11 @@ proc chat*(model: string, messages: seq[Message],
   if resp.chunked:
     readChunkedLines(socket, handleLine)
   elif resp.contentLength > 0:
-    assistantContent = "[ollama error] " & readFixedBody(socket, resp.contentLength)
+    let bodyText = readFixedBody(socket, resp.contentLength)
+    if resp.status >= 400:
+      assistantContent = "[ollama error " & $resp.status & "] " & bodyText
+    else:
+      assistantContent = bodyText
     stdout.styledWrite(styleBright, "💬 ")
     stdout.write(assistantContent)
   socket.close()

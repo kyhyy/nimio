@@ -125,7 +125,7 @@ proc grepTool(args: JsonNode, workdir: string): string {.gcsafe.} =
     searchFile(searchRoot)
   else:
     for path in walkDirRec(searchRoot):
-      if ".git" in path.relativePath(searchRoot).split(DirSep):
+      if ".git" in path.split(DirSep):
         continue
       searchFile(path)
       if matches.len >= maxMatches: break

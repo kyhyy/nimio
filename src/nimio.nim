@@ -273,11 +273,14 @@ proc main() =
   if args.resume and fileExists(sessPath):
     try:
       messages = loadSession(sessPath)
-      messages[0].content = cfg.systemPrompt
-      echo "resumed session (", $messages.len, " messages) from ", sessPath
     except CatchableError as e:
       stderr.writeLine "warning: failed to load session (" & e.msg & "), starting fresh"
+      messages = @[]
+    if messages.len == 0 or messages[0].role != rSystem:
       messages = @[Message(role: rSystem, content: cfg.systemPrompt)]
+    else:
+      messages[0].content = cfg.systemPrompt
+      echo "resumed session (", $messages.len, " messages) from ", sessPath
   else:
     messages = @[Message(role: rSystem, content: cfg.systemPrompt)]
 
