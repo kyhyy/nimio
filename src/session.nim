@@ -4,7 +4,7 @@
 ## $XDG_STATE_HOME/nimio/sessions (or ~/.local/state/nimio/sessions).
 
 import std/[json, md5, os]
-import ollama
+import types
 
 proc stateDir(): string =
   let xdg = getEnv("XDG_STATE_HOME")

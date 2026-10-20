@@ -1,0 +1,22 @@
+# Copy to nimio.config.toml in your working directory.
+# Only base_url is required.
+
+# Any OpenAI-compatible /v1/chat/completions endpoint.
+base_url = "http://127.0.0.1:8080/v1/chat/completions"   # llama-server
+# base_url = "https://openrouter.ai/api/v1/chat/completions"
+
+# Env var holding the API key. Optional: local servers don't need one.
+# If unset, OPENAI_API_KEY is used when present.
+# api_key_env = "OPENROUTER_API_KEY"
+
+model = "qwen3.6:35b"
+max_tool_calls = 30     # tool calls per turn before nimio asks to continue
+context_size = 32768    # denominator of the [context: N / X] meter
+
+# Prepended to the system prompt.
+# agent_md = "AGENTS.md"
+
+# Replaces the built-in system prompt.
+# system_prompt = """
+# You are nimio, a coding agent. Be concise.
+# """

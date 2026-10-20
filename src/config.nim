@@ -15,10 +15,8 @@ type
     systemPrompt*: Option[string]
     agentMd*: Option[string]
     maxToolCalls*: Option[int]
-    think*: Option[bool]
     contextSize*: Option[int]
-    provider*: Option[string]   # "ollama" (default) or "openai"
-    baseUrl*: Option[string]    # required for provider = "openai"
+    baseUrl*: Option[string]    # required
     apiKeyEnv*: Option[string]  # env var holding the API key; default OPENAI_API_KEY
 
 const ConfigFileName* = "nimio.config.toml"
@@ -55,20 +53,10 @@ proc loadConfig*(workdir: string): FileConfig =
           "in " & path & ": '" & key & "' must be an integer")
       result.field = some(v.getInt())
 
-  template tryBool(field, key: untyped) =
-    if toml.hasKey(key):
-      let v = toml[key]
-      if v.kind != TomlValueKind.Bool:
-        raise newException(ValueError,
-          "in " & path & ": '" & key & "' must be a boolean")
-      result.field = some(v.getBool())
-
   tryStr(model, "model")
   tryStr(systemPrompt, "system_prompt")
   tryStr(agentMd, "agent_md")
   tryInt(maxToolCalls, "max_tool_calls")
-  tryBool(think, "think")
   tryInt(contextSize, "context_size")
-  tryStr(provider, "provider")
   tryStr(baseUrl, "base_url")
   tryStr(apiKeyEnv, "api_key_env")

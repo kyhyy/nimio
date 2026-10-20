@@ -1,19 +1,25 @@
 ## nimio — minimal coding agent harness inspired by pi.
 
 import std/[json, options, os, parseopt, strutils, tables, terminal]
-import ollama, tools, config, session
-import openai
+import types, tools, config, session, openai
 
 const
   DefaultModel = "qwen3.6:35b"
   DefaultMaxToolCalls = 30
-  DefaultThink = false
   DefaultContextSize = 32768
   DefaultSystemPrompt = """You are nimio, a minimal coding agent running in a terminal.
 
-You have five tools: read_file, write_file, edit_file, grep, and bash. Use them to
-inspect and modify the user's project. All file paths are relative to the
-working directory.
+The working directory is the user's project. Explore it with your tools before
+making assumptions about its layout, language, or build system.
+
+You have five tools: read_file, write_file, edit_file, grep, and bash. All file
+paths are relative to the working directory.
+
+Testing changes:
+- After changing code, build or run the project's tests if it has them, and fix
+  failures before moving on.
+- Do not start long-running or interactive programs from bash; they will hang.
+- Do not commit or push unless asked.
 
 Be concise. Take action with tools rather than describing what you would do.
 If a tool returns an error, read the message and try a different approach.
@@ -31,11 +37,9 @@ type
     workdir: string
     model: string
     maxToolCalls: int
-    think: bool
     systemPrompt: string
     contextSize: int
     testTools: bool
-    provider: string
     baseUrl: string
     apiKey: string
 
@@ -113,10 +117,6 @@ proc resolveConfig(args: Args): ResolvedConfig =
     elif fileCfg.maxToolCalls.isSome: fileCfg.maxToolCalls.get()
     else: DefaultMaxToolCalls
 
-  result.think =
-    if fileCfg.think.isSome: fileCfg.think.get()
-    else: DefaultThink
-
   result.contextSize =
     if fileCfg.contextSize.isSome: fileCfg.contextSize.get()
     else: DefaultContextSize
@@ -125,26 +125,17 @@ proc resolveConfig(args: Args): ResolvedConfig =
     if fileCfg.systemPrompt.isSome: fileCfg.systemPrompt.get()
     else: DefaultSystemPrompt
 
-  result.provider =
-    if fileCfg.provider.isSome: fileCfg.provider.get()
-    else: "ollama"
-
-  if result.provider notin ["ollama", "openai"]:
-    stderr.writeLine "error: unknown provider '" & result.provider & "' (expected 'ollama' or 'openai')"
+  if fileCfg.baseUrl.isNone:
+    stderr.writeLine "error: base_url is required in " & ConfigFileName
     quit 1
-
-  if result.provider == "openai":
-    if fileCfg.baseUrl.isNone:
-      stderr.writeLine "error: provider = \"openai\" requires base_url in " & ConfigFileName
-      quit 1
-    result.baseUrl = fileCfg.baseUrl.get()
-    # api_key_env is optional: local servers like llama.cpp's don't need one.
-    # Only hard-require it when the user explicitly named an env var to use.
-    let keyEnv = fileCfg.apiKeyEnv.get("OPENAI_API_KEY")
-    result.apiKey = getEnv(keyEnv)
-    if result.apiKey.len == 0 and fileCfg.apiKeyEnv.isSome:
-      stderr.writeLine "error: environment variable " & keyEnv & " is not set"
-      quit 1
+  result.baseUrl = fileCfg.baseUrl.get()
+  # api_key_env is optional: local servers like llama.cpp's don't need one.
+  # Only hard-require it when the user explicitly named an env var to use.
+  let keyEnv = fileCfg.apiKeyEnv.get("OPENAI_API_KEY")
+  result.apiKey = getEnv(keyEnv)
+  if result.apiKey.len == 0 and fileCfg.apiKeyEnv.isSome:
+    stderr.writeLine "error: environment variable " & keyEnv & " is not set"
+    quit 1
 
   if fileCfg.agentMd.isSome:
     let mdPath = args.workdir / fileCfg.agentMd.get()
@@ -194,14 +185,6 @@ proc confirmContinue(used: int): bool =
   except EOFError:
     return false
 
-proc callModel(cfg: ResolvedConfig, messages: seq[Message],
-                toolsJson: JsonNode): ChatResponse =
-  if cfg.provider == "openai":
-    openai.chat(cfg.baseUrl, cfg.apiKey, cfg.model, messages, tools = toolsJson)
-  else:
-    ollama.chat(cfg.model, messages, tools = toolsJson,
-                think = cfg.think, numCtx = cfg.contextSize)
-
 proc agentTurn(cfg: ResolvedConfig, registry: Table[string, Tool],
                messages: var seq[Message]): tuple[promptTokens, outputTokens: int] =
   let toolsJson = toolsSchema(registry)
@@ -209,7 +192,7 @@ proc agentTurn(cfg: ResolvedConfig, registry: Table[string, Tool],
   var budget = cfg.maxToolCalls
 
   while true:
-    let response = callModel(cfg, messages, toolsJson)
+    let response = openai.chat(cfg.baseUrl, cfg.apiKey, cfg.model, messages, tools = toolsJson)
     result.promptTokens = response.promptTokens
     result.outputTokens = response.outputTokens
 
@@ -242,7 +225,7 @@ proc agentTurn(cfg: ResolvedConfig, registry: Table[string, Tool],
       else:
         messages.add(Message(role: rUser,
           content: "(user interrupted: max_tool_calls reached. summarize what you've done so far.)"))
-        let final = callModel(cfg, messages, toolsJson)
+        let final = openai.chat(cfg.baseUrl, cfg.apiKey, cfg.model, messages, tools = toolsJson)
         result.promptTokens = final.promptTokens
         result.outputTokens = final.outputTokens
         if final.content.len > 0:

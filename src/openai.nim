@@ -1,16 +1,15 @@
 ## OpenAI-compatible chat client (OpenRouter, OpenCode, Groq, llama.cpp's
 ## server, LM Studio, vLLM, etc.) — anything that speaks the
-## /v1/chat/completions SSE streaming protocol. Unlike Ollama's one-shot
-## tool_calls array, tool calls arrive here as incremental, index-keyed
-## fragments that must be assembled across chunks. Uses TLS only when
+## /v1/chat/completions SSE streaming protocol. Tool calls arrive as
+## incremental, index-keyed fragments that must be assembled across chunks. Uses TLS only when
 ## base_url's scheme is https — local servers are typically plain http.
 
 import std/[net, json, strutils, terminal, uri, tables]
 import httpstream
-import ollama
+import types
 
 proc toWireJson(m: Message): JsonNode =
-  ## OpenAI's wire format differs from nimio's internal/Ollama shape in
+  ## OpenAI's wire format differs from nimio's internal shape (types.toJson) in
   ## two ways that matter: tool_calls need "type":"function" and
   ## stringified (not object) arguments, and tool-result messages must
   ## carry tool_call_id or the provider rejects the whole request.

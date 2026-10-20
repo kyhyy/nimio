@@ -1,6 +1,5 @@
-## Minimal chunked-transfer HTTP body reader, shared by the Ollama and
-## OpenAI-compatible clients so the fiddly chunk-decoding logic lives in
-## one place.
+## Minimal chunked-transfer HTTP body reader for the OpenAI-compatible
+## client, keeping the fiddly chunk-decoding logic in one place.
 
 import std/[net, strutils]
 

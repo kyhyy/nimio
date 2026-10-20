@@ -1,7 +1,7 @@
 # nimio
 
-A minimal coding agent harness, written in Nim, that talks to a local
-[Ollama](https://ollama.com) instance. Inspired by
+A minimal coding agent harness, written in Nim, that talks to any
+OpenAI-compatible chat server. Inspired by
 [pi](https://github.com/badlogic/pi-mono).
 
 This is a learning project that I'm using to learn Nim and to understand
@@ -22,14 +22,16 @@ Five tools, an inner agent loop, and a streaming chat client. That's it.
 All file operations are constrained to a working directory (defaults to
 cwd, override with `--workdir` or the first positional arg). The model can't read or write outside it.
 
-The HTTP client speaks directly to Ollama's `/api/chat` endpoint over a
-raw TCP socket with no async runtime, no third-party HTTP libraries.
+The HTTP client speaks the OpenAI `/v1/chat/completions` streaming protocol
+over a raw socket (TLS for https URLs) with no async runtime and no
+third-party HTTP libraries. That covers llama.cpp's llama-server, OpenCode,
+OpenRouter, Groq, vLLM, LM Studio, Ollama's `/v1` endpoint, and so on.
 
 ## Requirements
 
 - [Nim](https://nim-lang.org) 2.0+ (`pacman -S nim` on Arch which I'm using currently as of writing this README)
-- [Ollama](https://ollama.com) running locally on `:11434`
-- A model with tool-calling support pulled. Default is `qwen3.6:35b`; override per-project via the config file (see below).
+- OpenSSL (for https `base_url`s)
+- An OpenAI-compatible server with a tool-calling model, e.g. llama-server on `:8080`. Set its URL as `base_url` in the config file (see below).
 
 ## Install
 
@@ -65,7 +67,7 @@ nimio --workdir=/tmp # same, but explicit flag form
 
 Other flags:
 
-- `--model=<name>` (or `-m`) pick the Ollama model for this run
+- `--model=<name>` (or `-m`) pick the model for this run
 - `--max-tool-calls=<n>` cap how many tools the model can call in one turn before nimio asks if you want to keep going (default 30)
 - `--resume` continue the last session saved for this workdir, if one exists
 
@@ -81,12 +83,17 @@ fresh and overwrites the saved file as the new conversation progresses.
 
 ## Configuration
 
-Drop a `nimio.config.toml` in the working directory to set things per-project. All fields are optional.
+Drop a `nimio.config.toml` in the working directory to set things per-project. Only `base_url` is required. Start from [`nimio.config.example.toml`](nimio.config.example.toml):
+
+```sh
+cp nimio.config.example.toml ~/code/myproj/nimio.config.toml
+```
 
 ```toml
+base_url = "http://127.0.0.1:8080/v1/chat/completions"
+api_key_env = "OPENROUTER_API_KEY"  # optional; defaults to OPENAI_API_KEY if set
 model = "qwen3.6:35b"
 max_tool_calls = 30
-think = false              # let the model emit reasoning blocks
 context_size = 32768       # used for the context usage display
 agent_md = "AGENTS.md"     # prepended to system prompt if set
 
@@ -127,7 +134,9 @@ edited /home/khajduk/Projects/nimio/hello.txt
 ```
 src/
 ├── nimio.nim      # entry point, agent loop, REPL, arg + config resolution
-├── ollama.nim     # HTTP/streaming client, message types
+├── openai.nim     # the (only) OpenAI-compatible streaming client
+├── httpstream.nim # HTTP header/chunked-body reader
+├── types.nim      # message and tool-call types
 ├── tools.nim      # tool definitions, dispatch, path containment
 ├── config.nim     # nimio.config.toml loader
 └── session.nim    # conversation save/load for --resume
